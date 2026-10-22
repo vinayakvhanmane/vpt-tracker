@@ -3,74 +3,87 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NSE Value Per Trade (VPT) Tracker</title>
-  <!-- Chart.js & PapaParse CDN -->
+  <title>NSE Value Per Trade Tracker</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       margin: 0;
-      padding: 12px;
-      background-color: #0f172a;
-      color: #f8fafc;
+      padding: 14px;
+      background-color: #0b1120;
+      color: #f1f5f9;
     }
-    h2 { margin: 8px 0; font-size: 1.2rem; }
+    h2 { margin: 6px 0 14px; font-size: 1.25rem; font-weight: 700; color: #38bdf8; }
     .card {
       background: #1e293b;
-      padding: 14px;
-      border-radius: 10px;
-      margin-bottom: 12px;
-    }
-    input, select, button {
-      width: 100%;
-      padding: 10px;
-      margin-top: 8px;
-      border-radius: 6px;
+      padding: 16px;
+      border-radius: 12px;
+      margin-bottom: 14px;
       border: 1px solid #334155;
+    }
+    input, select {
+      width: 100%;
+      padding: 12px;
+      margin-top: 8px;
+      border-radius: 8px;
+      border: 1px solid #475569;
       background: #0f172a;
-      color: white;
-      font-size: 0.95rem;
+      color: #f8fafc;
+      font-size: 1rem;
       box-sizing: border-box;
     }
-    button {
-      background: #2563eb;
-      font-weight: 600;
-      border: none;
-      cursor: pointer;
+    #statusText {
+      font-size: 0.85rem;
+      margin-top: 8px;
+      font-weight: 500;
+      color: #38bdf8;
     }
     .chart-container {
       position: relative;
       height: 230px;
-      margin-bottom: 16px;
+      margin-bottom: 18px;
     }
     .stat-row {
       display: flex;
       justify-content: space-between;
-      margin-top: 6px;
-      font-size: 0.85rem;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid #334155;
+      font-size: 0.9rem;
       color: #94a3b8;
     }
-    .stat-val { font-weight: 600; color: #38bdf8; }
+    .stat-val { font-weight: 700; color: #10b981; }
+    .stock-badge {
+      display: inline-block;
+      background: #334155;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      color: #cbd5e1;
+      margin-top: 4px;
+    }
   </style>
 </head>
 <body>
 
   <div class="card">
     <h2>📈 NSE VPT Analyzer</h2>
-    <label style="font-size:0.85rem; color:#94a3b8;">Upload NSE Bhavcopy (CSV):</label>
+    <label style="font-size:0.85rem; color:#94a3b8;">Upload NSE Bhavcopy (.csv):</label>
     <input type="file" id="csvFileInput" accept=".csv" multiple />
-    <div id="statusText" style="font-size:0.8rem; color:#10b981; margin-top:6px;">Ready</div>
+    <div id="statusText">Ready for data</div>
   </div>
 
   <div class="card">
-    <label style="font-size:0.85rem; color:#94a3b8;">Select Stock Symbol:</label>
+    <label style="font-size:0.85rem; color:#94a3b8;">Search or Select Stock:</label>
+    <input type="text" id="symbolSearch" placeholder="Type symbol, e.g. RELIANCE, TCS..." style="margin-bottom: 8px;" />
     <select id="stockSelector">
-      <option value="">-- Upload a file first --</option>
+      <option value="">-- Choose Stock --</option>
     </select>
     <div class="stat-row">
-      <span>Latest Close: <span id="latestClose" class="stat-val">-</span></span>
-      <span>Latest VPT: <span id="latestVpt" class="stat-val">-</span></span>
+      <span>Close: <span id="latestClose" class="stat-val">-</span></span>
+      <span>VPT: <span id="latestVpt" class="stat-val">-</span></span>
+      <span>Trades: <span id="latestTrades" class="stat-val">-</span></span>
     </div>
   </div>
 
@@ -80,16 +93,18 @@
       <canvas id="priceChart"></canvas>
     </div>
 
-    <h3 style="font-size: 0.95rem; margin: 0 0 8px 0; color: #cbd5e1;">Value Per Trade (Turnover / Trades)</h3>
+    <h3 style="font-size: 0.95rem; margin: 0 0 8px 0; color: #cbd5e1;">Value Per Trade (₹)</h3>
     <div class="chart-container">
       <canvas id="vptChart"></canvas>
     </div>
   </div>
 
   <script>
-    // 1. Setup Local IndexedDB for holding historical dates
     let db;
-    const request = indexedDB.open("NseVptDB", 1);
+    let allSymbols = [];
+
+    // Initialize IndexedDB
+    const request = indexedDB.open("NseVptDB_v2", 1);
     request.onupgradeneeded = (e) => {
       db = e.target.result;
       const store = db.createObjectStore("trades", { keyPath: ["symbol", "date"] });
@@ -97,26 +112,33 @@
     };
     request.onsuccess = (e) => {
       db = e.target.result;
-      loadAvailableSymbols();
+      refreshStockList();
     };
 
-    // 2. CSV Ingestion Engine
+    // CSV File Upload & Resilient Parsing
     document.getElementById("csvFileInput").addEventListener("change", (e) => {
       const files = Array.from(e.target.files);
       if (!files.length) return;
-      document.getElementById("statusText").innerText = "Processing files...";
 
-      let completed = 0;
+      const status = document.getElementById("statusText");
+      status.style.color = "#38bdf8";
+      status.innerText = "Processing " + files.length + " file(s)...";
+
+      let completedFiles = 0;
+      let totalSavedRecords = 0;
+
       files.forEach((file) => {
         Papa.parse(file, {
           header: true,
-          skipEmptyLines: true,
+          skipEmptyLines: "greedy",
           complete: function(results) {
-            saveToIndexedDB(results.data, () => {
-              completed++;
-              if (completed === files.length) {
-                document.getElementById("statusText").innerText = "All files imported successfully!";
-                loadAvailableSymbols();
+            saveCsvData(results.data, (count) => {
+              totalSavedRecords += count;
+              completedFiles++;
+              if (completedFiles === files.length) {
+                status.style.color = "#10b981";
+                status.innerText = `Success! Stored ${totalSavedRecords} records.`;
+                refreshStockList();
               }
             });
           }
@@ -124,24 +146,35 @@
       });
     });
 
-    function saveToIndexedDB(rows, callback) {
+    function saveCsvData(rows, callback) {
       const tx = db.transaction("trades", "readwrite");
       const store = tx.objectStore("trades");
+      let count = 0;
 
-      rows.forEach(r => {
-        // Strip column whitespace
-        const clean = {};
-        for (let k in r) clean[k.trim()] = (r[k] || "").trim();
+      rows.forEach(rawRow => {
+        // Strip whitespace from keys and values
+        const row = {};
+        for (let k in rawRow) {
+          if (k) row[k.trim().toUpperCase()] = (rawRow[k] || "").toString().trim();
+        }
 
-        // Target standard NSE columns: sec_bhavdata_full format
-        const symbol = clean["SYMBOL"];
-        const series = clean["SERIES"];
-        const dateStr = clean["DATE1"] || clean["TIMESTAMP"] || clean["TRADING_DATE"];
-        const turnover = parseFloat(clean["TOTTRDVAL"]) || 0;
-        const trades = parseFloat(clean["TOTALTRADES"]) || 0;
-        const close = parseFloat(clean["CLOSE_PRICE"] || clean["CLOSE"]) || 0;
+        const symbol = row["SYMBOL"];
+        const series = (row["SERIES"] || "").toUpperCase();
+        
+        // NSE uses either DATE1, TIMESTAMP, or TRADING_DATE
+        const dateStr = row["DATE1"] || row["TIMESTAMP"] || row["TRADING_DATE"] || "N/A";
 
-        if (symbol && series === "EQ" && trades > 0 && dateStr) {
+        // Handle turnover column (TOTTRDVAL or TURNOVER)
+        const turnover = parseFloat(row["TOTTRDVAL"] || row["TURNOVER_LACS"] || row["NET_TURNOV"]) || 0;
+        
+        // Handle trade count (TOTALTRADES or NO_OF_TRADES)
+        const trades = parseFloat(row["TOTALTRADES"] || row["NO_OF_TRADES"] || row["TOTAL_TRADES"]) || 0;
+        
+        // Handle close price
+        const close = parseFloat(row["CLOSE_PRICE"] || row["CLOSE"] || row["LAST_PRICE"]) || 0;
+
+        // Accept standard equity or rows with valid symbol & trades
+        if (symbol && (series === "EQ" || series === "" || !row["SERIES"]) && trades > 0) {
           const vpt = turnover / trades;
           store.put({
             symbol: symbol,
@@ -151,43 +184,65 @@
             trades: trades,
             vpt: Math.round(vpt * 100) / 100
           });
+          count++;
         }
       });
 
-      tx.oncomplete = callback;
+      tx.oncomplete = () => callback(count);
     }
 
-    // 3. Populate Stocks Dropdown
-    function loadAvailableSymbols() {
+    // Refresh Dropdown and Search List
+    function refreshStockList() {
       const tx = db.transaction("trades", "readonly");
       const store = tx.objectStore("trades");
       const index = store.index("symbol");
-      const symbols = new Set();
+      const symSet = new Set();
 
       index.openKeyCursor().onsuccess = function(e) {
         const cursor = e.target.result;
         if (cursor) {
-          symbols.add(cursor.key);
+          symSet.add(cursor.key);
           cursor.continue();
         } else {
-          const select = document.getElementById("stockSelector");
-          select.innerHTML = '<option value="">-- Choose Stock --</option>';
-          Array.from(symbols).sort().forEach(sym => {
-            const opt = document.createElement("option");
-            opt.value = sym;
-            opt.innerText = sym;
-            select.appendChild(opt);
-          });
+          allSymbols = Array.from(symSet).sort();
+          populateDropdown(allSymbols);
         }
       };
     }
 
-    // 4. Chart Rendering
-    let priceChartInstance, vptChartInstance;
-    document.getElementById("stockSelector").addEventListener("change", (e) => {
-      const sym = e.target.value;
-      if (!sym) return;
+    function populateDropdown(list) {
+      const select = document.getElementById("stockSelector");
+      select.innerHTML = '<option value="">-- Choose Stock (' + list.length + ' available) --</option>';
+      list.forEach(sym => {
+        const opt = document.createElement("option");
+        opt.value = sym;
+        opt.innerText = sym;
+        select.appendChild(opt);
+      });
+    }
 
+    // Symbol Search Filter
+    document.getElementById("symbolSearch").addEventListener("input", (e) => {
+      const query = e.target.value.trim().toUpperCase();
+      const filtered = allSymbols.filter(s => s.includes(query));
+      populateDropdown(filtered);
+      if (filtered.length === 1) {
+        document.getElementById("stockSelector").value = filtered[0];
+        loadChartData(filtered[0]);
+      }
+    });
+
+    // Chart Rendering
+    let priceChartInstance = null;
+    let vptChartInstance = null;
+
+    document.getElementById("stockSelector").addEventListener("change", (e) => {
+      if (e.target.value) {
+        loadChartData(e.target.value);
+      }
+    });
+
+    function loadChartData(sym) {
       const tx = db.transaction("trades", "readonly");
       const store = tx.objectStore("trades");
       const index = store.index("symbol");
@@ -195,54 +250,65 @@
 
       req.onsuccess = () => {
         const records = req.result.sort((a, b) => new Date(a.date) - new Date(b.date));
-        renderCharts(records);
-      };
-    });
+        if (!records.length) return;
 
-    function renderCharts(data) {
+        const latest = records[records.length - 1];
+        document.getElementById("latestClose").innerText = "₹" + latest.close;
+        document.getElementById("latestVpt").innerText = "₹" + Number(latest.vpt).toLocaleString("en-IN");
+        document.getElementById("latestTrades").innerText = Number(latest.trades).toLocaleString("en-IN");
+
+        drawCharts(records);
+      };
+    }
+
+    function drawCharts(data) {
       const labels = data.map(d => d.date);
       const prices = data.map(d => d.close);
       const vpts = data.map(d => d.vpt);
 
-      if (data.length) {
-        const last = data[data.length - 1];
-        document.getElementById("latestClose").innerText = "₹" + last.close;
-        document.getElementById("latestVpt").innerText = "₹" + Number(last.vpt).toLocaleString("en-IN");
-      }
-
       if (priceChartInstance) priceChartInstance.destroy();
       if (vptChartInstance) vptChartInstance.destroy();
 
-      const priceCtx = document.getElementById("priceChart").getContext("2d");
-      priceChartInstance = new Chart(priceCtx, {
+      const pCtx = document.getElementById("priceChart").getContext("2d");
+      priceChartInstance = new Chart(pCtx, {
         type: "line",
         data: {
           labels: labels,
           datasets: [{
-            label: "Price (₹)",
+            label: "Close Price",
             data: prices,
             borderColor: "#38bdf8",
-            borderWidth: 2,
+            backgroundColor: "rgba(56, 189, 248, 0.1)",
+            fill: true,
             tension: 0.2,
-            pointRadius: 2
+            borderWidth: 2,
+            pointRadius: 3
           }]
         },
-        options: { responsive: true, maintainAspectRatio: false }
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } }
+        }
       });
 
-      const vptCtx = document.getElementById("vptChart").getContext("2d");
-      vptChartInstance = new Chart(vptCtx, {
+      const vCtx = document.getElementById("vptChart").getContext("2d");
+      vptChartInstance = new Chart(vCtx, {
         type: "bar",
         data: {
           labels: labels,
           datasets: [{
-            label: "VPT (₹)",
+            label: "Value Per Trade (₹)",
             data: vpts,
             backgroundColor: "#818cf8",
             borderRadius: 4
           }]
         },
-        options: { responsive: true, maintainAspectRatio: false }
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } }
+        }
       });
     }
   </script>
